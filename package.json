@@ -8,7 +8,13 @@
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
-    "lint": "expo lint"
+    "lint": "expo lint",
+    "docker:build": "docker build -t hydronet .",
+    "docker:build:prod": "docker build -f Dockerfile.prod -t hydronet:prod .",
+    "docker:run": "docker run -p 8081:8081 -p 19000:19000 -p 19001:19001 -p 19002:19002 hydronet",
+    "docker:run:prod": "docker run -p 3000:80 hydronet:prod",
+    "docker:dev": "docker-compose up",
+    "docker:prod": "docker-compose --profile production up hydronet-prod"
   },
   "dependencies": {
     "@expo/vector-icons": "^14.1.0",
