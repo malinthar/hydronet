@@ -32,6 +32,9 @@ export default function HomeScreen() {
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [showTimePicker, setShowTimePicker] = useState(false);
   const [selectedPhotos, setSelectedPhotos] = useState<string[]>([]);
+  const [isAnimating, setIsAnimating] = useState(false);
+  const [animationInterval, setAnimationInterval] = useState<ReturnType<typeof setInterval> | null>(null);
+  const webViewRef = React.useRef<WebView>(null);
 
   // Function to handle address search
   const handleAddressSearch = async (text: string) => {
@@ -92,8 +95,46 @@ export default function HomeScreen() {
     }
   };
 
+  // Function to toggle flood evolution animation
+  const toggleAnimation = () => {
+    if (isAnimating) {
+      // Stop animation
+      if (animationInterval) {
+        clearInterval(animationInterval);
+        setAnimationInterval(null);
+      }
+      setIsAnimating(false);
+    } else {
+      // Start animation
+      setIsAnimating(true);
+      const interval = setInterval(() => {
+        setActiveStepIndex((prevIndex) => {
+          if (!predictionResult) return prevIndex;
+          const nextIndex = (prevIndex + 1) % predictionResult.steps.length;
+          return nextIndex;
+        });
+      }, 5000); // Change every 2 seconds
+      setAnimationInterval(interval);
+    }
+  };
+
+  // Clean up animation on unmount
+  React.useEffect(() => {
+    return () => {
+      if (animationInterval) {
+        clearInterval(animationInterval);
+      }
+    };
+  }, [animationInterval]);
+
   // Reset function to go back to input form
   const handleNewPrediction = () => {
+    // Stop animation if running
+    if (animationInterval) {
+      clearInterval(animationInterval);
+      setAnimationInterval(null);
+    }
+    setIsAnimating(false);
     setShowInputForm(true);
     setShowResults(false);
     setShowMap(false);
@@ -271,6 +312,507 @@ export default function HomeScreen() {
         </body>
       </html>
     `;
+  };
+
+  // Update water level when timestep changes
+  React.useEffect(() => {
+    if (predictionResult && webViewRef.current) {
+      const currentStep = predictionResult.steps[activeStepIndex];
+      const waterDepth = parseFloat(currentStep.depth);
+      
+      // Send message to WebView to update water level
+      webViewRef.current.injectJavaScript(`
+        if (typeof updateWaterLevel === 'function') {
+          updateWaterLevel(${waterDepth});
+        }
+        true; // Required for iOS
+      `);
+    }
+  }, [activeStepIndex, predictionResult]);
+
+  // Function to generate 3D neighborhood visualization HTML
+  const get3DNeighborhoodHTML = () => {
+    const currentStep = predictionResult?.steps[activeStepIndex];
+    const waterDepth = currentStep ? parseFloat(currentStep.depth) : 0;
+    const waterColor = currentStep ? getWaterLevelColor(currentStep.depth) : '#4FA3C1';
+    const riskLevel = currentStep ? currentStep.risk : 'Unknown';
+    
+    // Get coordinates for fetching real buildings
+    const defaultLat = -41.2865;
+    const defaultLng = 174.7762;
+    const lat = selectedAddress?.coordinates?.latitude || defaultLat;
+    const lng = selectedAddress?.coordinates?.longitude || defaultLng;
+    
+    return `
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+          <style>
+            body { 
+              margin: 0; 
+              padding: 0; 
+              overflow: hidden;
+              background: linear-gradient(to bottom, #87CEEB 0%, #E0F6FF 100%);
+            }
+            #canvas-container { 
+              width: 100%; 
+              height: 100vh; 
+              touch-action: none;
+            }
+            .info-overlay {
+              position: absolute;
+              top: 10px;
+              left: 10px;
+              background: rgba(255, 255, 255, 0.95);
+              padding: 12px 18px;
+              border-radius: 12px;
+              font-family: Arial, sans-serif;
+              font-size: 14px;
+              box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+              z-index: 100;
+              min-width: 140px;
+            }
+            .depth-value {
+              font-size: 28px;
+              font-weight: bold;
+              color: #1E88E5;
+              margin-bottom: 5px;
+            }
+            .depth-label {
+              color: #666;
+              font-size: 13px;
+              margin-bottom: 12px;
+            }
+            .risk-indicator {
+              display: flex;
+              align-items: center;
+              gap: 8px;
+              margin-top: 8px;
+              padding-top: 8px;
+              border-top: 1px solid #E1E8ED;
+            }
+            .risk-dot {
+              width: 12px;
+              height: 12px;
+              border-radius: 50%;
+              background-color: ${waterColor};
+              box-shadow: 0 0 8px ${waterColor}80;
+            }
+            .risk-label {
+              font-size: 12px;
+              color: #666;
+              margin-right: 4px;
+            }
+            .risk-value {
+              font-weight: bold;
+              color: ${waterColor};
+              font-size: 13px;
+              text-transform: uppercase;
+            }
+            .loading-overlay {
+              position: absolute;
+              top: 50%;
+              left: 50%;
+              transform: translate(-50%, -50%);
+              background: rgba(255, 255, 255, 0.95);
+              padding: 20px 30px;
+              border-radius: 12px;
+              font-family: Arial, sans-serif;
+              font-size: 14px;
+              box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+              z-index: 99;
+              display: none;
+            }
+            .loading-overlay.show {
+              display: block;
+            }
+            .controls-hint {
+              position: absolute;
+              top: 10px;
+              right: 10px;
+              background: rgba(255, 255, 255, 0.95);
+              padding: 10px 14px;
+              border-radius: 8px;
+              font-family: Arial, sans-serif;
+              fontSize: 11px;
+              box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+              z-index: 100;
+              max-width: 180px;
+            }
+            .controls-hint-title {
+              font-weight: bold;
+              margin-bottom: 6px;
+              color: #333;
+              font-size: 12px;
+            }
+            .control-item {
+              display: flex;
+              align-items: center;
+              gap: 8px;
+              margin-bottom: 4px;
+              color: #666;
+            }
+            .control-icon {
+              font-weight: bold;
+              color: #4FA3C1;
+              min-width: 20px;
+            }
+            .zoom-info {
+              position: absolute;
+              bottom: 10px;
+              right: 10px;
+              background: rgba(255, 255, 255, 0.9);
+              padding: 8px 12px;
+              border-radius: 8px;
+              font-family: Arial, sans-serif;
+              fontSize: 11px;
+              color: #666;
+              z-index: 100;
+            }
+          </style>
+        </head>
+        <body>
+          <div class="loading-overlay" id="loadingOverlay">
+            Loading buildings...
+          </div>
+          
+          <div class="zoom-info" id="zoomInfo">
+            Radius: <span id="zoomLevel">100</span>m
+          </div>
+          
+          <div id="canvas-container"></div>
+          <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+          <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+          <script>
+            const userLat = ${lat};
+            const userLng = ${lng};
+            let currentWaterDepth = ${waterDepth};
+            
+            // Get risk color as hex for Three.js
+            let riskColorHex = 0xD2691E;
+            if (currentWaterDepth >= 0.5) {
+              riskColorHex = 0xF44336;
+            } else if (currentWaterDepth >= 0.3) {
+              riskColorHex = 0xFFC107;
+            } else {
+              riskColorHex = 0x4CAF50;
+            }
+            
+            // Setup Three.js scene
+            const scene = new THREE.Scene();
+            scene.fog = new THREE.Fog(0x87CEEB, 10, 200);
+            
+            const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            // Start with aerial view directly above user's location
+            camera.position.set(0, 20, 0);
+            camera.lookAt(0, 0, 0);
+            
+            const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            document.getElementById('canvas-container').appendChild(renderer.domElement);
+            
+            // Add OrbitControls for user interaction
+            const controls = new THREE.OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+            controls.screenSpacePanning = false;
+            controls.minDistance = 5;
+            controls.maxDistance = 100;
+            controls.maxPolarAngle = Math.PI / 2;
+            controls.target.set(0, 0, 0);
+            
+            // Progressive loading variables
+            let loadedBuildings = new Set();
+            let currentLoadRadius = 0.001; // Start with ~100m
+            let isLoading = false;
+            let userBuilding = null;
+            
+            // Lighting
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+            scene.add(ambientLight);
+            
+
+            // Ground - larger to accommodate more buildings
+            const groundGeometry = new THREE.PlaneGeometry(300, 300);
+            const groundMaterial = new THREE.MeshLambertMaterial({ color: 0x90EE90 });
+            const ground = new THREE.Mesh(groundGeometry, groundMaterial);
+            ground.rotation.x = -Math.PI / 2;
+            ground.receiveShadow = true;
+            scene.add(ground);
+            
+            // Helper function to convert lat/lng to local coordinates
+            function latLngToLocal(lat, lng) {
+              const latDiff = lat - userLat;
+              const lngDiff = lng - userLng;
+              const x = lngDiff * 111320 * Math.cos(userLat * Math.PI / 180) / 10;
+              const z = -latDiff * 110540 / 10;
+              return { x, z };
+            }
+            
+            // Function to create building from OSM data
+            function createBuilding(way, isUserBuilding = false) {
+              const nodes = way.geometry;
+              if (!nodes || nodes.length < 3) return null;
+              
+              const shape = new THREE.Shape();
+              const firstNode = latLngToLocal(nodes[0].lat, nodes[0].lon);
+              shape.moveTo(firstNode.x, firstNode.z);
+              
+              for (let i = 1; i < nodes.length; i++) {
+                const node = latLngToLocal(nodes[i].lat, nodes[i].lon);
+                shape.lineTo(node.x, node.z);
+              }
+              
+              const tags = way.tags || {};
+              let height = 10;
+              
+              if (tags['building:levels']) {
+                height = parseFloat(tags['building:levels']) * 3;
+              } else if (tags.height) {
+                height = parseFloat(tags.height);
+              } else if (tags.building === 'house') {
+                height = 6;
+              } else if (tags.building === 'apartments') {
+                height = 15;
+              } else if (tags.building === 'commercial') {
+                height = 12;
+              }
+              
+              const extrudeSettings = {
+                depth: height / 10,
+                bevelEnabled: false
+              };
+              
+              const geometry = new THREE.ExtrudeGeometry(shape, extrudeSettings);
+              const buildingColor = isUserBuilding ? riskColorHex : 0xD2691E;
+              const material = new THREE.MeshLambertMaterial({ 
+                color: buildingColor,
+                emissive: isUserBuilding ? buildingColor : 0x000000,
+                emissiveIntensity: isUserBuilding ? 0.2 : 0
+              });
+              
+              const building = new THREE.Mesh(geometry, material);
+              building.rotation.x = -Math.PI / 2;
+              building.castShadow = true;
+              building.receiveShadow = true;
+              building.userData.buildingId = way.id;
+              
+              return building;
+            }
+            
+            // Fetch buildings in a specific radius
+            async function fetchBuildingsInRadius(radius) {
+              if (isLoading) return;
+              isLoading = true;
+              
+              const loadingEl = document.getElementById('loadingOverlay');
+              loadingEl.classList.add('show');
+              
+              try {
+                const south = userLat - radius;
+                const west = userLng - radius;
+                const north = userLat + radius;
+                const east = userLng + radius;
+                
+                const query = \`[out:json][timeout:25];
+                  (
+                    way["building"](\${south},\${west},\${north},\${east});
+                  );
+                  out body;
+                  >;
+                  out skel qt;\`;
+                
+                const response = await fetch('https://overpass-api.de/api/interpreter', {
+                  method: 'POST',
+                  body: query
+                });
+                
+                const data = await response.json();
+                
+                const nodeMap = {};
+                data.elements.forEach(element => {
+                  if (element.type === 'node') {
+                    nodeMap[element.id] = { lat: element.lat, lon: element.lon };
+                  }
+                });
+                
+                const buildings = data.elements.filter(el => 
+                  el.type === 'way' && el.tags && el.tags.building
+                );
+                
+                let minDistance = Infinity;
+                
+                buildings.forEach(building => {
+                  if (loadedBuildings.has(building.id)) return;
+                  if (!building.nodes || building.nodes.length === 0) return;
+                  
+                  const geometry = building.nodes.map(nodeId => nodeMap[nodeId]).filter(n => n);
+                  if (geometry.length === 0) return;
+                  
+                  building.geometry = geometry;
+                  
+                  const centerLat = geometry.reduce((sum, n) => sum + n.lat, 0) / geometry.length;
+                  const centerLng = geometry.reduce((sum, n) => sum + n.lon, 0) / geometry.length;
+                  
+                  const distance = Math.sqrt(
+                    Math.pow(centerLat - userLat, 2) + 
+                    Math.pow(centerLng - userLng, 2)
+                  );
+                  
+                  // Track closest building for user's location
+                  if (!userBuilding && distance < minDistance) {
+                    minDistance = distance;
+                    userBuilding = building;
+                  }
+                  
+                  const isUser = building === userBuilding;
+                  const mesh = createBuilding(building, isUser);
+                  if (mesh) {
+                    scene.add(mesh);
+                    loadedBuildings.add(building.id);
+                  }
+                });
+                
+                console.log(\`Loaded \${loadedBuildings.size} buildings total\`);
+                
+                // Add marker if no buildings found initially
+                if (loadedBuildings.size === 0) {
+                  const markerGeometry = new THREE.BoxGeometry(2, 3, 2);
+                  const markerMaterial = new THREE.MeshLambertMaterial({ 
+                    color: riskColorHex,
+                    emissive: riskColorHex,
+                    emissiveIntensity: 0.3
+                  });
+                  const marker = new THREE.Mesh(markerGeometry, markerMaterial);
+                  marker.position.y = 1.5;
+                  marker.castShadow = true;
+                  scene.add(marker);
+                }
+                
+              } catch (error) {
+                console.error('Error fetching buildings:', error);
+              } finally {
+                loadingEl.classList.remove('show');
+                isLoading = false;
+              }
+            }
+            
+            // Water plane - will be updated dynamically
+            const waterGeometry = new THREE.PlaneGeometry(300, 300);
+            const waterMaterial = new THREE.MeshPhongMaterial({ 
+              color: 0x1E88E5,
+              transparent: true,
+              opacity: 0.7,
+              shininess: 100,
+              specular: 0x2196F3
+            });
+
+            const water = new THREE.Mesh(waterGeometry, waterMaterial);
+            water.rotation.x = -Math.PI / 2;
+            water.position.y = currentWaterDepth;
+            if (currentWaterDepth > 0) {
+              scene.add(water);
+            }
+            
+            // Function to update water level (called from React Native)
+            window.updateWaterLevel = function(newDepth) {
+              currentWaterDepth = newDepth;
+              
+              if (water) {
+                water.position.y = newDepth;
+                
+                // Update water color based on depth
+                let waterBaseColor = 0x42A5F5; // Low
+                if (newDepth >= 0.5) {
+                  waterBaseColor = 0x1565C0; // Danger
+                } else if (newDepth >= 0.3) {
+                  waterBaseColor = 0x1976D2; // Warning
+                }
+                water.material.color.setHex(waterBaseColor);
+                
+                // Show/hide water based on depth
+                if (newDepth > 0 && !water.visible) {
+                  water.visible = true;
+                } else if (newDepth === 0) {
+                  water.visible = false;
+                }
+              }
+              
+              console.log('Water level updated to: ' + newDepth + 'm');
+            };
+            
+            // Function to check if we need to load more buildings
+            function checkAndLoadMoreBuildings() {
+              const distance = camera.position.distanceTo(controls.target);
+              const radiusMeters = Math.round(distance * 10);
+              
+              // Update zoom info display
+              document.getElementById('zoomLevel').textContent = radiusMeters;
+              
+              // Calculate required load radius based on camera distance
+              const requiredRadius = distance * 0.0001; // Approximate conversion
+              
+              if (requiredRadius > currentLoadRadius && !isLoading) {
+                currentLoadRadius = requiredRadius;
+                fetchBuildingsInRadius(currentLoadRadius);
+              }
+            }
+            
+            // Listen to control changes for progressive loading
+            controls.addEventListener('change', () => {
+              checkAndLoadMoreBuildings();
+            });
+            
+            // Animation loop
+            function animate() {
+              requestAnimationFrame(animate);
+              
+              controls.update();
+              
+              if (water && currentWaterDepth > 0) {
+                water.position.y = currentWaterDepth + Math.sin(Date.now() * 0.001) * 0.05;
+                water.material.opacity = 0.7 + Math.sin(Date.now() * 0.002) * 0.1;
+              }
+              
+              renderer.render(scene, camera);
+            }
+            
+            window.addEventListener('resize', () => {
+              camera.aspect = window.innerWidth / window.innerHeight;
+              camera.updateProjectionMatrix();
+              renderer.setSize(window.innerWidth, window.innerHeight);
+            });
+            
+            // Initial load with small radius
+            fetchBuildingsInRadius(currentLoadRadius).then(() => {
+              animate();
+              setTimeout(checkAndLoadMoreBuildings, 500);
+            });
+          </script>
+        </body>
+      </html>
+    `;
+  };
+
+  // Updated function to show results with 3D visualization
+  const handleShowResults = () => {
+    setShowMap(false);
+    setShowResults(true);
+  };
+
+  // Reset function to go back to input form
+  const handleReset = () => {
+    setShowInputForm(true);
+    setShowResults(false);
+    setShowMap(false);
+    setPredictionResult(null);
+    setLocation('');
+    setSelectedAddress(null);
+    setAddressSuggestions([]);
+    setActiveStepIndex(0);
   };
 
   // Add date/time helper functions
@@ -601,9 +1143,25 @@ export default function HomeScreen() {
             </Text>
           </View>
           
-          {/* Time step selector */}
+          {/* Time step selector with animation control */}
           <View style={styles.timeStepSelector}>
-            <Text style={styles.timeStepHeader}>Forecast Timeline:</Text>
+            <View style={styles.timeStepHeaderRow}>
+              <Text style={styles.timeStepHeader}>Forecast Timeline:</Text>
+              <TouchableOpacity 
+                style={styles.animationButton}
+                onPress={toggleAnimation}
+              >
+                <Ionicons 
+                  name={isAnimating ? "pause" : "play"} 
+                  size={16} 
+                  color="#FFFFFF" 
+                />
+                <Text style={styles.animationButtonText}>
+                  {isAnimating ? 'Pause' : 'Play Evolution'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+            
             <View style={styles.timeStepButtons}>
               {predictionResult.steps.map((step, index) => (
                 <TouchableOpacity
@@ -617,7 +1175,17 @@ export default function HomeScreen() {
                       borderColor: '#FFFFFF'
                     }
                   ]}
-                  onPress={() => setActiveStepIndex(index)}
+                  onPress={() => {
+                    setActiveStepIndex(index);
+                    // Stop animation when user manually selects
+                    if (isAnimating) {
+                      if (animationInterval) {
+                        clearInterval(animationInterval);
+                        setAnimationInterval(null);
+                      }
+                      setIsAnimating(false);
+                    }
+                  }}
                 >
                   <Text style={[
                     styles.timeStepButtonText,
@@ -634,6 +1202,21 @@ export default function HomeScreen() {
                 </TouchableOpacity>
               ))}
             </View>
+            
+            {/* Progress bar during animation */}
+            {isAnimating && (
+              <View style={styles.animationProgress}>
+                <View 
+                  style={[
+                    styles.animationProgressBar,
+                    { 
+                      width: `${((activeStepIndex + 1) / predictionResult.steps.length) * 100}%`,
+                      backgroundColor: getWaterLevelColor(predictionResult.steps[activeStepIndex].depth)
+                    }
+                  ]} 
+                />
+              </View>
+            )}
           </View>
           
           {/* Current step display */}
@@ -643,48 +1226,26 @@ export default function HomeScreen() {
                 {predictionResult.steps[activeStepIndex].depth}
               </Text>
               <Text style={styles.depthUnit}>meters</Text>
+              {isAnimating && (
+                <View style={styles.animatingIndicator}>
+                  <Ionicons name="play-circle" size={20} color="#4FA3C1" />
+                </View>
+              )}
             </View>
             
-            <View style={styles.visualizationContainer}>
-              <View style={styles.waterAnimation}>
-                <View style={[
-                  styles.waterLevel, 
-                  { 
-                    height: Math.min(parseFloat(predictionResult.steps[activeStepIndex].depth) * 100, 170),
-                    backgroundColor: `${getWaterLevelColor(predictionResult.steps[activeStepIndex].depth)}80`
-                  }
-                ]} />
-                {/* Reference lines */}
-                <View style={styles.warningLine}>
-                  <Text style={styles.warningText}>0.3m</Text>
-                </View>
-                <View style={styles.dangerLine}>
-                  <Text style={styles.dangerText}>0.5m</Text>
-                </View>
-              </View>
-              
-              <View style={styles.houseContainer}>
-                <View style={styles.houseIconContainer}>
-                  {/* Water level overlay on house */}
-                  <View 
-                    style={[
-                      styles.houseWaterOverlay,
-                      { 
-                        height: Math.min(parseFloat(predictionResult.steps[activeStepIndex].depth) * 100, 190),
-                        backgroundColor: `${getWaterLevelColor(predictionResult.steps[activeStepIndex].depth)}80`
-                      }
-                    ]} 
-                  />
-                  <Ionicons 
-                    name="home"
-                    size={200}
-                    color={parseFloat(predictionResult.steps[activeStepIndex].depth) >= 0.5 ? 
-                      getWaterLevelColor(predictionResult.steps[activeStepIndex].depth) : 
-                      "#666"
-                    } 
-                  />
-                </View>
-              </View>
+            <View style={styles.visualization3DContainer}>
+              <WebView
+                ref={webViewRef}
+                style={styles.webview3D}
+                originWhitelist={['*']}
+                source={{ html: get3DNeighborhoodHTML() }}
+                javaScriptEnabled={true}
+                domStorageEnabled={true}
+                scrollEnabled={false}
+                onMessage={(event) => {
+                  console.log('WebView message:', event.nativeEvent.data);
+                }}
+              />
             </View>
 
             {/* Add Legend */}
@@ -1109,6 +1670,26 @@ const styles = StyleSheet.create({
     color: '#666',
     marginBottom: 8,
   },
+  timeStepHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  animationButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#4FA3C1',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 16,
+  },
+  animationButtonText: {
+    fontSize: 12,
+    color: '#FFFFFF',
+    fontWeight: '600',
+  },
   timeStepButtons: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -1150,6 +1731,20 @@ const styles = StyleSheet.create({
     color: '#888',
     alignSelf: 'flex-end',
     marginBottom: 8,
+  },
+  visualization3DContainer: {
+    width: '100%',
+    height: 350,
+    backgroundColor: '#87CEEB',
+    borderRadius: 12,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: '#E1E8ED',
+    marginBottom: 16,
+  },
+  webview3D: {
+    flex: 1,
+    backgroundColor: 'transparent',
   },
   visualizationContainer: {
     flexDirection: 'row',
@@ -1543,5 +2138,39 @@ const styles = StyleSheet.create({
     color: '#4FA3C1',
     fontSize: 16,
     fontWeight: '500',
+  },
+  // webview3D: {
+  //   width: '100%',
+  //   height: 400,
+  //   borderRadius: 12,
+  //   overflow: 'hidden',
+  //   borderWidth: 1,
+  //   borderColor: '#E1E8ED',
+  // },
+  // visualization3DContainer: {
+  //   width: '100%',
+  //   height: 350,
+  //   backgroundColor: '#87CEEB',
+  //   borderRadius: 12,
+  //   overflow: 'hidden',
+  //   borderWidth: 1,
+  //   borderColor: '#E1E8ED',
+  //   marginBottom: 16,
+  // },
+  animationProgress: {
+    height: 4,
+    backgroundColor: '#E1E8ED',
+    borderRadius: 2,
+    marginTop: 12,
+    overflow: 'hidden',
+  },
+  animationProgressBar: {
+    height: '100%',
+    borderRadius: 2,
+  },
+  animatingIndicator: {
+    marginLeft: 8,
+    alignSelf: 'flex-end',
+    marginBottom: 10,
   },
 });

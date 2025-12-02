@@ -1,4 +1,3 @@
-// Mock NZ address API service
 
 // Address type definition
 export interface Address {
@@ -17,15 +16,15 @@ export interface Address {
 // Hardcoded list of NZ addresses for now
 const mockAddresses: Address[] = [
   {
-    id: '1',
-    street: '123 Cuba Street',
-    suburb: 'Te Aro',
-    city: 'Wellington',
+    id: '92',
+    street: 'Swensa Road',
+    suburb: 'Flaxmere',
+    city: 'Hastings',
     postcode: '6011',
-    fullAddress: '123 Cuba Street, Te Aro, Wellington 6011',
+    fullAddress: '92 Swansea Road, Flaxmere, Hastings',
     coordinates: {
-      latitude: -41.2930,
-      longitude: 174.7739
+      latitude: -39.62829807,
+      longitude: 176.7859637
     }
   },
   {
